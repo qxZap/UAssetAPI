@@ -2999,9 +2999,47 @@ namespace UAssetAPI
         /// </summary>
         /// <param name="outputPath">The path on disk to write the asset to.</param>
         /// <exception cref="UnknownEngineVersionException">Thrown when <see cref="ObjectVersion"/> is unspecified.</exception>
+        /// <summary>
+        /// Write every asset with UNVERSIONED property serialization, whatever
+        /// it was read as.
+        ///
+        /// Motor Town's CLIENT pak is unversioned and its DEDICATED SERVER pak
+        /// is versioned -- the same content, cooked twice. Unversioned is the
+        /// only form this toolchain constructs properties for: a versioned
+        /// write needs a PropertyTypeName on every property, which nothing
+        /// built here carries, and the writer dies on a null dereference.
+        ///
+        /// PKG_UnversionedProperties is a PER-PACKAGE flag, so a pak may hold
+        /// both. Writing our packages unversioned into a versioned pak is
+        /// therefore legal, and far smaller than teaching 101 construction
+        /// sites to emit type names.
+        ///
+        /// Opt-in, because it is not free: an unversioned write resolves every
+        /// property through the .usmap, so a property with no schema there
+        /// cannot be written. That fails loudly rather than silently.
+        /// </summary>
+        public static bool ForceUnversionedOnWrite = false;
+
         public virtual void Write(string outputPath)
         {
             if (ObjectVersion == ObjectVersion.UNKNOWN) throw new UnknownEngineVersionException("Cannot begin serialization before an object version is specified");
+            if (ForceUnversionedOnWrite && !HasUnversionedProperties)
+                PackageFlags |= EPackageFlags.PKG_UnversionedProperties;
+
+            // A VERSIONED package writes a PropertyTypeName for every property.
+            // Properties READ from such a package carry theirs; properties this
+            // toolchain CONSTRUCTED do not, and the writer dereferences null.
+            // Derive the missing ones now, while the name map is still open --
+            // doing it during serialization throws "Attempt to add name ... to
+            // name map during serialization time".
+            if (!HasUnversionedProperties
+                && ObjectVersionUE5 >= ObjectVersionUE5.PROPERTY_TAG_COMPLETE_TYPE_NAME)
+            {
+                foreach (var exp in Exports)
+                {
+                    if (exp is NormalExport ne) MainSerializer.EnsureTypeNames(ne.Data, this);
+                }
+            }
 
             MemoryStream newData = WriteData();
 

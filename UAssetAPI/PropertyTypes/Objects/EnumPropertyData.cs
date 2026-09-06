@@ -1,4 +1,4 @@
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -141,7 +141,24 @@ public class EnumPropertyData : PropertyData<FName>
             {
                 long enumIndice = 0;
                 var listOfEnums = writer.Asset.Mappings.EnumMap[EnumType.Value.Value].Values;
-                var validIndices = listOfEnums.Where(pair => pair.Value == Value.Value.Value).Select(pair => pair.Key);
+                // A VERSIONED package stores the enum value fully qualified
+                // ("EDeliveryCargoType::SmallPackage"). The .usmap is NOT
+                // consistent about which form it holds: native enums appear
+                // bare ("SmallPackage") while Blueprint enums appear qualified
+                // ("CityApartmentBaseType_Enum::NewEnumerator15"). Matching
+                // only one form breaks the other -- both were hit converting
+                // the dedicated-server cook to unversioned -- so accept either.
+                string rawEnum = Value?.Value?.Value;
+                string bareEnum = rawEnum;
+                if (bareEnum != null && EnumType?.Value?.Value is string etPrefix
+                    && bareEnum.StartsWith(etPrefix + "::", StringComparison.Ordinal))
+                {
+                    bareEnum = bareEnum.Substring(etPrefix.Length + 2);
+                }
+                string wantedEnum = rawEnum;
+                var validIndices = listOfEnums
+                    .Where(pair => pair.Value == rawEnum || pair.Value == bareEnum)
+                    .Select(pair => pair.Key);
                 if (Value == null)
                 {
                     enumIndice = -1;
@@ -156,7 +173,9 @@ public class EnumPropertyData : PropertyData<FName>
 
                     if (!success)
                     {
-                        throw new FormatException("Could not serialize EnumProperty value " + Value.Value.Value + " as " + InnerType?.Value?.Value);
+                        throw new FormatException("Could not serialize EnumProperty value " + Value.Value.Value
+                            + " (matched as '" + wantedEnum + "' against enum " + EnumType?.Value?.Value + ") as " + InnerType?.Value?.Value
+                            + "; usmap offers [" + string.Join(", ", listOfEnums.Values.Take(12)) + "]");
                     }
                 }
                 else
