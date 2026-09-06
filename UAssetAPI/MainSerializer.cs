@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -583,6 +583,232 @@ namespace UAssetAPI
         /// <param name="writer">The BinaryWriter to serialize the property to.</param>
         /// <param name="includeHeader">Does this property serialize its header in the current context?</param>
         /// <returns>The serial offset where the length of the property is stored.</returns>
+
+        private static FPropertyTypeNameNode TypeNode(UAsset asset, string name, int innerCount)
+        {
+            var n = default(FPropertyTypeNameNode);
+            n.Name = FName.FromString(asset, name);
+            n.InnerCount = innerCount;
+            return n;
+        }
+
+        /// <summary>
+        /// The nodes naming a STRUCT: the struct's own name, carrying its
+        /// module path as a single inner node. Real example out of Motor
+        /// Town's server cook:
+        ///     [ArrayProperty:1 StructProperty:1 MTProductionConfig:1 /Script/MotorTown:0]
+        /// The module path comes from the .usmap schema; when it is unknown the
+        /// struct is emitted with no inner node, which still names it.
+        /// </summary>
+        private static List<FPropertyTypeNameNode> StructNodes(UAsset asset, string structName)
+            => NamedTypeNodes(asset, structName,
+                   asset.Mappings?.Schemas != null
+                   && structName != null
+                   && asset.Mappings.Schemas.TryGetValue(structName, out var sch)
+                       ? sch?.ModulePath : null);
+
+        private static List<FPropertyTypeNameNode> EnumNodes(UAsset asset, string enumName)
+            => NamedTypeNodes(asset, enumName,
+                   asset.Mappings?.EnumMap != null
+                   && enumName != null
+                   && asset.Mappings.EnumMap.TryGetValue(enumName, out var en)
+                       ? en?.ModulePath : null);
+
+        /// <summary>
+        /// A struct or enum name carrying its module path as one inner node --
+        /// the shape the game's own cook writes:
+        ///     [StructProperty:1 Vector:1 /Script/CoreUObject:0]
+        ///     [ByteProperty:1 EComponentMobility:1 /Script/Engine:0]
+        /// Without the module path the name is still emitted, just bare.
+        /// </summary>
+        private static List<FPropertyTypeNameNode> NamedTypeNodes(UAsset asset, string name, string modulePath)
+        {
+            var res = new List<FPropertyTypeNameNode>();
+            if (string.IsNullOrEmpty(name) || name == "None")
+            {
+                res.Add(TypeNode(asset, "None", 0));
+                return res;
+            }
+            if (string.IsNullOrEmpty(modulePath))
+            {
+                res.Add(TypeNode(asset, name, 0));
+                return res;
+            }
+            res.Add(TypeNode(asset, name, 1));
+            res.Add(TypeNode(asset, modulePath, 0));
+            return res;
+        }
+
+        /// <summary>
+        /// Build the type-name node chain for a property that has none.
+        ///
+        /// The shapes are taken from what the READER consumes, so they cannot
+        /// drift from it: ArrayProperty takes parameter 0 as its element type,
+        /// MapProperty takes 0 and 1 as key and value, EnumProperty and
+        /// ByteProperty take 0 as the enum, StructProperty takes 0 as the
+        /// struct. Everything else is a leaf.
+        /// </summary>
+
+        /// <summary>
+        /// Give every property that lacks one a PropertyTypeName, BEFORE
+        /// serialization starts.
+        ///
+        /// Deriving one lazily inside Write() does not work: building the node
+        /// chain interns names, and the name map is sealed once serialization
+        /// begins -- "Attempt to add name BoolProperty to name map during
+        /// serialization time". So this runs as a pre-pass while the map is
+        /// still open.
+        ///
+        /// Only versioned assets need it; the unversioned path never reads a
+        /// PropertyTypeName.
+        /// </summary>
+        internal static void EnsureTypeNames(IList<PropertyData> data, UAsset asset)
+        {
+            if (data == null) return;
+            foreach (var prop in data)
+            {
+                if (prop == null) continue;
+                if (prop.PropertyTypeName is null)
+                {
+                    prop.PropertyTypeName = DeriveTypeName(prop, asset);
+                }
+                else if (prop.PropertyTypeName.Nodes is { Count: > 0 } nodes)
+                {
+                    // RE-INTERN. An FName is an index into ITS OWN package's
+                    // name map, and PropertyTypeName is built out of FNames.
+                    // Cloning an export from one asset into another carries the
+                    // source's indices over, so the type names land on whatever
+                    // happens to sit at that index in the destination -- or on
+                    // nothing, and the property reads back as
+                    // UnknownPropertyData with a numeric type. It never showed
+                    // up before because the client cook is unversioned and
+                    // carries no type names at all.
+                    for (int i = 0; i < nodes.Count; i++)
+                    {
+                        var n = nodes[i];
+                        string nm = n.Name.ToString();
+                        if (string.IsNullOrEmpty(nm)) continue;
+                        n.Name = FName.FromString(asset, nm);
+                        nodes[i] = n;
+                    }
+                }
+                switch (prop)
+                {
+                    case StructPropertyData sp:
+                        EnsureTypeNames(sp.Value, asset);
+                        break;
+                    case ArrayPropertyData arr when arr.Value != null:
+                        EnsureTypeNames(arr.Value, asset);
+                        break;
+                    case MapPropertyData map when map.Value != null:
+                    {
+                        var flat = new List<PropertyData>();
+                        foreach (var kv in map.Value) { flat.Add(kv.Key); flat.Add(kv.Value); }
+                        EnsureTypeNames(flat, asset);
+                        break;
+                    }
+                }
+            }
+        }
+
+        public static FPropertyTypeName DeriveTypeName(PropertyData property, UAsset asset)
+        {
+            var nodes = new List<FPropertyTypeNameNode>();
+            AppendTypeNodes(nodes, property, asset);
+            return new FPropertyTypeName(nodes);
+        }
+
+        private static void AppendTypeNodes(List<FPropertyTypeNameNode> nodes, PropertyData property, UAsset asset)
+        {
+            // PropertyType is an FString, not an FName -- one .Value, not two.
+            string self = property.PropertyType?.Value ?? "None";
+            switch (property)
+            {
+                // SetPropertyData derives from ArrayPropertyData and has the same
+                // shape (parameter 0 is the element type), so this arm covers both;
+                // `self` still names it correctly because PropertyType is virtual.
+                case ArrayPropertyData arr:
+                {
+                    var inner = new List<FPropertyTypeNameNode>();
+                    AppendNodesForTypeName(inner, arr.ArrayType?.Value?.Value,
+                        arr.Value != null && arr.Value.Length > 0 ? arr.Value[0] : null, asset);
+                    nodes.Add(TypeNode(asset, self, 1));
+                    nodes.AddRange(inner);
+                    return;
+                }
+                case MapPropertyData map:
+                {
+                    PropertyData firstKey = null, firstVal = null;
+                    foreach (var kv in map.Value) { firstKey = kv.Key; firstVal = kv.Value; break; }
+                    var kn = new List<FPropertyTypeNameNode>();
+                    var vn = new List<FPropertyTypeNameNode>();
+                    AppendNodesForTypeName(kn, map.KeyType?.Value?.Value, firstKey, asset);
+                    AppendNodesForTypeName(vn, map.ValueType?.Value?.Value, firstVal, asset);
+                    nodes.Add(TypeNode(asset, self, 2));
+                    nodes.AddRange(kn);
+                    nodes.AddRange(vn);
+                    return;
+                }
+                case StructPropertyData sp:
+                {
+                    nodes.Add(TypeNode(asset, "StructProperty", 1));
+                    nodes.AddRange(StructNodes(asset, sp.StructType?.Value?.Value));
+                    return;
+                }
+                case EnumPropertyData en:
+                {
+                    // TWO parameters, from the game's own cook:
+                    //   [EnumProperty:2 EComponentCreationMethod:1 /Script/Engine:0 ByteProperty:0]
+                    // parameter 0 is the enum (with its module), parameter 1 is
+                    // the underlying integer type it serialises as.
+                    nodes.Add(TypeNode(asset, self, 2));
+                    nodes.AddRange(EnumNodes(asset, en.EnumType?.Value?.Value));
+                    // InnerType is not reliably the underlying type here --
+                    // EnumPropertyData.Write assigns the ENUM's name to it on
+                    // the versioned path -- so only trust it when it actually
+                    // names a property type. Otherwise the game's own value:
+                    // an enum serialises as a byte.
+                    string inner = en.InnerType?.Value?.Value;
+                    if (string.IsNullOrEmpty(inner) || !inner.EndsWith("Property", StringComparison.Ordinal))
+                        inner = "ByteProperty";
+                    nodes.Add(TypeNode(asset, inner, 0));
+                    return;
+                }
+                case BytePropertyData by when by.EnumType != null && by.EnumType.Value.Value != "None":
+                {
+                    //   [ByteProperty:1 EComponentMobility:1 /Script/Engine:0]
+                    nodes.Add(TypeNode(asset, self, 1));
+                    nodes.AddRange(EnumNodes(asset, by.EnumType.Value.Value));
+                    return;
+                }
+                default:
+                    nodes.Add(TypeNode(asset, self, 0));
+                    return;
+            }
+        }
+
+        // An element of a container: its own PropertyTypeName if it has one,
+        // otherwise derived from the sample element, otherwise just the
+        // container's declared element type as a leaf.
+        private static void AppendNodesForTypeName(List<FPropertyTypeNameNode> nodes, string declaredType,
+                                                   PropertyData sample, UAsset asset)
+        {
+            // Derive from the sample's TYPE. Never copy sample.PropertyTypeName
+            // verbatim: FPropertyTypeName.GetParameter returns a SLICE
+            // (Nodes[param..]), so a child's stored chain also contains every
+            // node after it -- a map key's chain carries the value's nodes too.
+            // Splicing that back in duplicated the value chain and produced
+            //   [MapProperty:2 NameProperty:0 Struct... Struct...]
+            // where the game writes
+            //   [MapProperty:2 NameProperty:0 Struct...]
+            if (sample != null)
+            {
+                AppendTypeNodes(nodes, sample, asset);
+                return;
+            }
+            nodes.Add(TypeNode(asset, string.IsNullOrEmpty(declaredType) ? "None" : declaredType, 0));
+        }
+
         public static int Write(PropertyData property, AssetBinaryWriter writer, bool includeHeader)
         {
             if (property == null) return -1;
@@ -604,7 +830,12 @@ namespace UAssetAPI
                 }
                 else
                 {
-                    property.PropertyTypeName.Write(writer);
+                    // A property this toolchain CONSTRUCTED has no
+                    // PropertyTypeName -- nothing needs one on the unversioned
+                    // path, which is all the client cook uses. The dedicated
+                    // server cook is versioned and requires one on every
+                    // property, so derive it rather than dereference null.
+                    (property.PropertyTypeName ??= DeriveTypeName(property, writer.Asset)).Write(writer);
                 }
 
                 // update flags appropriately
