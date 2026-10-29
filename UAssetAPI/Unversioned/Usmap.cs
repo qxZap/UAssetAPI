@@ -925,7 +925,7 @@ namespace UAssetAPI.Unversioned
                         if (relevantSchema?.DefaultValues != null && relevantSchema.DefaultValues.ContainsKey(prop.Name))
                         {
                             object defValue = relevantSchema.DefaultValues[prop.Name];
-                            string defValueSerialized = System.Text.Json.JsonSerializer.Serialize(defValue, new JsonSerializerOptions { WriteIndented = true, IndentCharacter = tab[0], IndentSize = tab.Length }).Trim();
+                            string defValueSerialized = System.Text.Json.JsonSerializer.Serialize(defValue, new JsonSerializerOptions { WriteIndented = true }).Trim();
                             if (defValueSerialized.Contains('\n'))
                             {
                                 defValueSerialized = "\n" + tab + tab + defValueSerialized.Replace("\n", "\n" + tab + tab);

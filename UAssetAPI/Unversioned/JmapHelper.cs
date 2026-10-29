@@ -272,7 +272,7 @@ namespace UAssetAPI.Unversioned
                 "Enum" => JsonSerializer.Deserialize<JmapEnum>(ref reader, options),
                 _ => null,
             };
-            res?.Type = typeDiscriminator;
+            if (res != null) res.Type = typeDiscriminator;  // net8: no null-conditional assignment
 
             return res;
         }
