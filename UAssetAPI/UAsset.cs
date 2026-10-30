@@ -559,7 +559,7 @@ namespace UAssetAPI
         /// <returns>A new MemoryStream that stores the binary data of the input file.</returns>
         public MemoryStream PathToStream(string p, bool loadUEXP = true)
         {
-            using (FileStream origStream = File.Open(p, FileMode.Open, FileAccess.Read))
+            using (FileStream origStream = File.Open(p, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 MemoryStream completeStream = new MemoryStream();
                 origStream.CopyTo(completeStream);
@@ -572,7 +572,7 @@ namespace UAssetAPI
                         var targetFile = Path.ChangeExtension(p, "uexp");
                         if (File.Exists(targetFile))
                         {
-                            using (FileStream newStream = File.Open(targetFile, FileMode.Open))
+                            using (FileStream newStream = File.Open(targetFile, FileMode.Open, FileAccess.Read, FileShare.Read))
                             {
                                 completeStream.Seek(0, SeekOrigin.End);
                                 newStream.CopyTo(completeStream);

@@ -1059,7 +1059,7 @@ namespace UAssetAPI.Unversioned
         /// <returns>A new MemoryStream that stores the binary data of the input file.</returns>
         public static MemoryStream PathToStream(string p)
         {
-            using (FileStream origStream = File.Open(p, FileMode.Open, FileAccess.Read))
+            using (FileStream origStream = File.Open(p, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 MemoryStream completeStream = new MemoryStream();
                 origStream.CopyTo(completeStream);
@@ -1709,7 +1709,7 @@ namespace UAssetAPI.Unversioned
         {
             byte[] restOfData = null;
             UsmapVersion ver = UsmapVersion.Initial;
-            using (FileStream origStream = File.Open(usmapPath, FileMode.Open))
+            using (FileStream origStream = File.Open(usmapPath, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 UnrealBinaryReader reader = new UnrealBinaryReader(origStream);
 
