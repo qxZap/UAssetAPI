@@ -1128,6 +1128,9 @@ namespace UAssetAPI
 #if DEBUGVERBOSE
                 Console.WriteLine("\nFailed to parse export " + (i + 1) + ": " + ex.ToString());
 #endif
+                // A raw fallback otherwise hides WHICH property broke -- usually a stale usmap.
+                if (Environment.GetEnvironmentVariable("MTMI_UASSET_VERBOSE") == "1")
+                    Console.Error.WriteLine("export " + (i + 1) + " (" + Exports[i].ObjectName + ") parsed raw: " + ex.Message);
                 if (read) reader.BaseStream.Seek(Exports[i].SerialOffset, SeekOrigin.Begin);
                 Exports[i] = Exports[i].ConvertToChildExport<RawExport>();
                 if (read) ((RawExport)Exports[i]).Data = reader.ReadBytes((int)Exports[i].SerialSize);
